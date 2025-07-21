@@ -426,16 +426,16 @@ with tab1:
         st.subheader("凡例")
         st.markdown("""
         <div style='margin-bottom: 10px;'>
-            <div style='background-color: #90EE90; padding: 5px; margin: 2px 0; border-radius: 3px;'>
+            <div style='background-color: #4caf50; color: white; padding: 5px; margin: 2px 0; border-radius: 3px; font-weight: bold;'>
                 ✅ 希望通りの勤務
             </div>
-            <div style='background-color: #FFB6C1; padding: 5px; margin: 2px 0; border-radius: 3px; border: 2px solid #FF1493;'>
+            <div style='background-color: #ff4081; color: white; padding: 5px; margin: 2px 0; border-radius: 3px; border: 3px solid #c51162; font-weight: bold;'>
                 ⚠️ 希望と異なる勤務
             </div>
-            <div style='background-color: #FFF9E6; padding: 5px; margin: 2px 0; border-radius: 3px;'>
+            <div style='background-color: #ffc107; color: #212121; padding: 5px; margin: 2px 0; border-radius: 3px; font-weight: bold;'>
                 📅 土日
             </div>
-            <div style='background-color: #E6F3FF; padding: 5px; margin: 2px 0; border-radius: 3px;'>
+            <div style='background-color: #3f51b5; color: white; padding: 5px; margin: 2px 0; border-radius: 3px; font-weight: bold;'>
                 🌙 ロング・準夜・深夜 固定3人
             </div>
         </div>
@@ -467,29 +467,32 @@ with tab1:
                             pass
             
             def style_shift_table(val, row_name, col_name):
+                # 集計行のスタイル
                 if isinstance(row_name, str) and row_name.startswith('【'):
                     if row_name == '【合計勤務人数】':
-                        return 'background-color: #2E4057; color: white; font-weight: bold'
+                        return 'background-color: #1a237e; color: white; font-weight: bold; opacity: 1'
                     else:
-                        return 'background-color: #4A6FA5; color: white'
+                        return 'background-color: #3949ab; color: white; opacity: 1'
                 
+                # 集計列のスタイル
                 if col_name in ['日勤数', 'ロング数', '準夜数', '深夜数', '休み数', '勤務日数']:
                     if col_name == '勤務日数':
-                        return 'background-color: #E0E5F1; font-weight: bold'
+                        return 'background-color: #e8eaf6; color: #1a237e; font-weight: bold; opacity: 1'
                     else:
-                        return 'background-color: #F0F3F8'
+                        return 'background-color: #f5f5f5; color: #424242; opacity: 1'
                 
-                # 希望が叶わなかった場合の表示
+                # 希望が叶わなかった場合の表示（濃いピンクとはっきりした枠）
                 if isinstance(col_name, (datetime.date, pd.Timestamp)) and (row_name, col_name) in unfulfilled_hopes:
-                    return 'background-color: #FFB6C1; border: 2px solid #FF1493'
+                    return 'background-color: #ff4081; color: white; font-weight: bold; border: 3px solid #c51162; opacity: 1'
                 
-                # 希望通りになった場合の表示
+                # 希望通りになった場合の表示（濃い緑）
                 if isinstance(col_name, (datetime.date, pd.Timestamp)) and (row_name, col_name) in hope_cells and (row_name, col_name) not in unfulfilled_hopes:
-                    return 'background-color: #90EE90'
+                    return 'background-color: #4caf50; color: white; opacity: 1'
                 
+                # 土日のハイライト（濃い黄色）
                 if isinstance(col_name, (datetime.date, pd.Timestamp)):
                     if col_name.weekday() >= 5:
-                        return 'background-color: #FFF9E6'
+                        return 'background-color: #ffc107; color: #212121; opacity: 1'
                 
                 return ''
             
@@ -855,9 +858,9 @@ with tab4:
                         st.markdown(f"<div style='opacity: 0.3; text-align: center;'><b>{current_date.day}日({day_name})</b></div>", unsafe_allow_html=True)
                     else:
                         if day_idx >= 5:
-                            st.markdown(f"<div style='background-color: #FFF9E6; padding: 5px; text-align: center; border-radius: 5px;'><b>{current_date.day}日({day_name})</b></div>", unsafe_allow_html=True)
+                            st.markdown(f"<div style='background-color: #ffc107; color: #212121; padding: 5px; text-align: center; border-radius: 5px; font-weight: bold;'><b>{current_date.day}日({day_name})</b></div>", unsafe_allow_html=True)
                         else:
-                            st.markdown(f"<div style='background-color: #E8F4FD; padding: 5px; text-align: center; border-radius: 5px;'><b>{current_date.day}日({day_name})</b></div>", unsafe_allow_html=True)
+                            st.markdown(f"<div style='background-color: #e3f2fd; color: #0d47a1; padding: 5px; text-align: center; border-radius: 5px; font-weight: bold;'><b>{current_date.day}日({day_name})</b></div>", unsafe_allow_html=True)
                         
                         day_data = None
                         for data in night_shift_data:
@@ -878,12 +881,12 @@ with tab4:
                                     if members:
                                         for member in members:
                                             skill_color = {
-                                                '師長': '#8B0000',
-                                                'リーダー': '#FF6B6B',
-                                                '中堅': '#4CAF50',
-                                                '若手': '#42A5F5',
-                                                '新人': '#BA68C8'
-                                            }.get(member['skill'], '#999')
+                                                '師長': '#d32f2f',      # 濃い赤
+                                                'リーダー': '#e91e63',  # ピンク
+                                                '中堅': '#388e3c',      # 濃い緑
+                                                '若手': '#1976d2',      # 濃い青
+                                                '新人': '#7b1fa2'       # 濃い紫
+                                            }.get(member['skill'], '#616161')
                                             
                                             st.markdown(f"<div style='background-color: {skill_color}; color: white; padding: 3px 8px; margin: 2px 0; border-radius: 3px; font-size: 11px;'>{member['block']}: {member['name']} [{member['skill']}]</div>", unsafe_allow_html=True)
                             
@@ -935,12 +938,12 @@ with tab4:
         # スキルレベルの凡例
         st.subheader('📊 スキルレベル凡例')
         skill_cols = st.columns(5)
-        skills = [('師長', '#8B0000'), ('リーダー', '#FF6B6B'), ('中堅', '#4CAF50'), 
-                 ('若手', '#42A5F5'), ('新人', '#BA68C8')]
+        skills = [('師長', '#d32f2f'), ('リーダー', '#e91e63'), ('中堅', '#388e3c'), 
+                 ('若手', '#1976d2'), ('新人', '#7b1fa2')]
         
         for idx, (skill, color) in enumerate(skills):
             with skill_cols[idx]:
-                st.markdown(f"<div style='background-color: {color}; color: white; padding: 5px; text-align: center; border-radius: 3px;'>{skill}</div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='background-color: {color}; color: white; padding: 5px; text-align: center; border-radius: 3px; font-weight: bold;'>{skill}</div>", unsafe_allow_html=True)
         
         # 夜勤統計
         st.write("---")
