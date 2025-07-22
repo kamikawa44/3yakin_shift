@@ -227,8 +227,8 @@ def create_3night_schedule(settings):
             holidays = []
             for d in range(NUM_DAYS):
                 var = model.NewBoolVar(f'is_holiday_n{n}_d{d}')
-                model.Add(shifts[(n, d)] == ALL_SHIFTS['休み']).OnlyEnforceIf(var)
-                model.Add(shifts[(n, d)] != ALL_SHIFTS['休み']).OnlyEnforceIf(var.Not())
+                model.Add(shifts[(n, d)] == ALL_SKILLS['休み']).OnlyEnforceIf(var)
+                model.Add(shifts[(n, d)] != ALL_SKILLS['休み']).OnlyEnforceIf(var.Not())
                 holidays.append(var)
             
             num_holidays = sum(holidays)
@@ -286,85 +286,7 @@ def create_3night_schedule(settings):
             continue
     
     # すべてのレベルで失敗
-    return False, None, -1, Nonenewbie_ok)
-            penalties.append(newbie_ok.Not() * 1000)
-    
-    # 公平性制約
-    fairness_nurses = [n for n in range(NUM_NURSES) if nurse_skills[n] != ALL_SKILLS['師長']]
-    
-    # 休日数の公平性
-    for n in fairness_nurses:
-        holidays = []
-        for d in range(NUM_DAYS):
-            var = model.NewBoolVar(f'is_holiday_n{n}_d{d}')
-            model.Add(shifts[(n, d)] == ALL_SHIFTS['休み']).OnlyEnforceIf(var)
-            model.Add(shifts[(n, d)] != ALL_SHIFTS['休み']).OnlyEnforceIf(var.Not())
-            holidays.append(var)
-        
-        num_holidays = sum(holidays)
-        holiday_diff = model.NewIntVar(-NUM_DAYS, NUM_DAYS, f'holiday_diff_n{n}')
-        model.Add(holiday_diff == num_holidays - MONTHLY_HOLIDAYS)
-        abs_holiday_diff = model.NewIntVar(0, NUM_DAYS, f'abs_holiday_diff_n{n}')
-        model.AddAbsEquality(abs_holiday_diff, holiday_diff)
-        penalties.append(abs_holiday_diff * 100)
-    
-    # 夜勤回数の公平性
-    night_counts = {}
-    for n in fairness_nurses:
-        night_vars = []
-        for d in range(NUM_DAYS):
-            var = model.NewBoolVar(f'is_night_n{n}_d{d}')
-            model.Add(shifts[(n,d)] == ALL_SHIFTS['準夜']).OnlyEnforceIf(var)
-            model.Add(shifts[(n,d)] != ALL_SHIFTS['準夜']).OnlyEnforceIf(var.Not())
-            night_vars.append(var)
-        night_counts[n] = sum(night_vars)
-    
-    if len(night_counts) > 1:
-        min_nights = model.NewIntVar(0, NUM_DAYS, 'min_nights')
-        max_nights = model.NewIntVar(0, NUM_DAYS, 'max_nights')
-        model.AddMinEquality(min_nights, list(night_counts.values()))
-        model.AddMaxEquality(max_nights, list(night_counts.values()))
-        penalties.append((max_nights - min_nights) * 50)
-    
-    model.Minimize(sum(penalties))
-    
-    # ソルバー設定
-    solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = settings.get('max_solve_time', 30)
-    solver.parameters.num_search_workers = 4
-    
-    status = solver.Solve(model)
-
-    if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
-        records = []
-        for n in range(NUM_NURSES):
-            for d in range(NUM_DAYS):
-                date = START_DATE + datetime.timedelta(days=d)
-                records.append({ 
-                    "スタッフ": staff_df.iloc[n]['名前'], 
-                    "スキル": staff_df.iloc[n]['スキル'], 
-                    "ブロック": staff_df.iloc[n]['ブロック'], 
-                    "日付": date, 
-                    "勤務": SHIFT_NAMES[solver.Value(shifts[(n,d)])] 
-                })
-        result_df = pd.DataFrame(records)
-        pivot_df = result_df.pivot_table(
-            index=['スタッフ','スキル','ブロック'], 
-            columns='日付', 
-            values='勤務', 
-            aggfunc='first'
-        ).reset_index()
-        
-        violation_report = {}
-        for (d, sc), diff_var in violations.items():
-            if diff_var is not None:
-                diff_val = solver.Value(diff_var)
-                if diff_val != 0:
-                    violation_report[(d, sc)] = diff_val
-                    
-        return True, pivot_df, solver.ObjectiveValue(), violation_report
-    else:
-        return False, None, -1, None
+    return False, None, -1, None
 
 # 集計機能
 def add_summary_to_shift_table(result_df, start_date):
@@ -1018,12 +940,12 @@ with tab4:
                                     if members:
                                         for member in members:
                                             skill_color = {
-                                                '師長': '#8B0000',
-                                                'リーダー': '#FF6B6B',
-                                                '中堅': '#4CAF50',
-                                                '若手': '#42A5F5',
-                                                '新人': '#BA68C8'
-                                            }.get(member['skill'], '#999')
+                                                '師長': '#d32f2f',      # 濃い赤
+                                                'リーダー': '#e91e63',  # ピンク
+                                                '中堅': '#388e3c',      # 濃い緑
+                                                '若手': '#1976d2',      # 濃い青
+                                                '新人': '#7b1fa2'       # 濃い紫
+                                            }.get(member['skill'], '#616161')
                                             
                                             st.markdown(f"<div style='background-color: {skill_color}; color: white; padding: 3px 8px; margin: 2px 0; border-radius: 3px; font-size: 11px;'>{member['block']}: {member['name']} [{member['skill']}]</div>", unsafe_allow_html=True)
                             
@@ -1038,12 +960,12 @@ with tab4:
                                     if members:
                                         for member in members:
                                             skill_color = {
-                                                '師長': '#8B0000',
-                                                'リーダー': '#FF6B6B',
-                                                '中堅': '#4CAF50',
-                                                '若手': '#42A5F5',
-                                                '新人': '#BA68C8'
-                                            }.get(member['skill'], '#999')
+                                                '師長': '#d32f2f',      # 濃い赤
+                                                'リーダー': '#e91e63',  # ピンク
+                                                '中堅': '#388e3c',      # 濃い緑
+                                                '若手': '#1976d2',      # 濃い青
+                                                '新人': '#7b1fa2'       # 濃い紫
+                                            }.get(member['skill'], '#616161')
                                             
                                             st.markdown(f"<div style='background-color: {skill_color}; color: white; padding: 3px 8px; margin: 2px 0; border-radius: 3px; font-size: 11px;'>{member['block']}: {member['name']} [{member['skill']}]</div>", unsafe_allow_html=True)
                         else:
