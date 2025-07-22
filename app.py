@@ -33,169 +33,260 @@ def create_3night_schedule(settings):
     }
     max_day_shift_staff = { ALL_SHIFTS['日勤']: [settings['d_w_max'], settings['d_h_max']] }
 
-    model = cp_model.CpModel()
-    shifts = {}
-    for n in range(NUM_NURSES):
-        for d in range(NUM_DAYS):
-            shifts[(n, d)] = model.NewIntVar(0, len(ALL_SHIFTS) - 1, f'shift_n{n}_d{d}')
-
-    # --- 絶対的な制約 ---
-    # 希望休の反映
-    for nurse_idx, day_idx, shift_code in settings['hope_shifts']:
-        if nurse_idx < NUM_NURSES and day_idx < NUM_DAYS:
-            model.Add(shifts[nurse_idx, day_idx] == shift_code)
+    # 制約レベルの設定（段階的に緩和）
+    constraint_levels = [
+        {'block_constraint': True, 'leadership_strict': True, 'fairness_weight': 1.0},
+        {'block_constraint': True, 'leadership_strict': False, 'fairness_weight': 0.5},
+        {'block_constraint': False, 'leadership_strict': False, 'fairness_weight': 0.3},
+    ]
     
-    # 師長の勤務（平日日勤、土日休み）
-    head_nurse_indices = [i for i, skill in enumerate(nurse_skills) if skill == ALL_SKILLS['師長']]
-    if head_nurse_indices:
-        n = head_nurse_indices[0]
+    for level_idx, constraint_level in enumerate(constraint_levels):
+        model = cp_model.CpModel()
+        shifts = {}
+        for n in range(NUM_NURSES):
+            for d in range(NUM_DAYS):
+                shifts[(n, d)] = model.NewIntVar(0, len(ALL_SHIFTS) - 1, f'shift_n{n}_d{d}')
+
+        # --- 絶対的な制約 ---
+        # 希望休の反映
+        for nurse_idx, day_idx, shift_code in settings['hope_shifts']:
+            if nurse_idx < NUM_NURSES and day_idx < NUM_DAYS:
+                model.Add(shifts[nurse_idx, day_idx] == shift_code)
+        
+        # 師長の勤務（平日日勤、土日休み）
+        head_nurse_indices = [i for i, skill in enumerate(nurse_skills) if skill == ALL_SKILLS['師長']]
+        if head_nurse_indices:
+            n = head_nurse_indices[0]
+            for d in range(NUM_DAYS):
+                date = START_DATE + datetime.timedelta(days=d)
+                if date.weekday() < 5: 
+                    model.Add(shifts[n, d] == ALL_SHIFTS['日勤'])
+                else: 
+                    model.Add(shifts[n, d] == ALL_SHIFTS['休み'])
+        
+        # --- 基本制約 ---
+        penalties = []
+        
+        # 個人ごとのルール（師長以外）
+        for n in range(NUM_NURSES):
+            if nurse_skills[n] == ALL_SKILLS['師長']: 
+                continue
+            
+            # ロングと準夜の数を同じにする（レベル0,1でのみ適用）
+            if level_idx < 2:
+                is_long = []
+                is_junya = []
+                for d in range(NUM_DAYS):
+                    long_var = model.NewBoolVar(f'is_long_n{n}_d{d}')
+                    junya_var = model.NewBoolVar(f'is_junya_n{n}_d{d}')
+                    
+                    model.Add(shifts[n, d] == ALL_SHIFTS['ロング']).OnlyEnforceIf(long_var)
+                    model.Add(shifts[n, d] != ALL_SHIFTS['ロング']).OnlyEnforceIf(long_var.Not())
+                    model.Add(shifts[n, d] == ALL_SHIFTS['準夜']).OnlyEnforceIf(junya_var)
+                    model.Add(shifts[n, d] != ALL_SHIFTS['準夜']).OnlyEnforceIf(junya_var.Not())
+                    
+                    is_long.append(long_var)
+                    is_junya.append(junya_var)
+                
+                model.Add(sum(is_long) == sum(is_junya))
+            
+            # ロング連続禁止
+            for d in range(NUM_DAYS - 1):
+                is_long_d0 = model.NewBoolVar(f'is_long_d0_n{n}_d{d}')
+                is_long_d1 = model.NewBoolVar(f'is_long_d1_n{n}_d{d}')
+                model.Add(shifts[n, d] == ALL_SHIFTS['ロング']).OnlyEnforceIf(is_long_d0)
+                model.Add(shifts[n, d] != ALL_SHIFTS['ロング']).OnlyEnforceIf(is_long_d0.Not())
+                model.Add(shifts[n, d+1] == ALL_SHIFTS['ロング']).OnlyEnforceIf(is_long_d1)
+                model.Add(shifts[n, d+1] != ALL_SHIFTS['ロング']).OnlyEnforceIf(is_long_d1.Not())
+                model.AddBoolOr([is_long_d0.Not(), is_long_d1.Not()])
+            
+            # 準夜→深夜→休みパターン（厳格）
+            for d in range(NUM_DAYS - 2):
+                is_junya = model.NewBoolVar(f'is_junya_n{n}_d{d}')
+                is_shinya_next = model.NewBoolVar(f'is_shinya_n{n}_d{d+1}')
+                is_yasumi_after = model.NewBoolVar(f'is_yasumi_n{n}_d{d+2}')
+                
+                model.Add(shifts[(n, d)] == ALL_SHIFTS['準夜']).OnlyEnforceIf(is_junya)
+                model.Add(shifts[(n, d)] != ALL_SHIFTS['準夜']).OnlyEnforceIf(is_junya.Not())
+                model.Add(shifts[(n, d + 1)] == ALL_SHIFTS['深夜']).OnlyEnforceIf(is_shinya_next)
+                model.Add(shifts[(n, d + 1)] != ALL_SHIFTS['深夜']).OnlyEnforceIf(is_shinya_next.Not())
+                model.Add(shifts[(n, d + 2)] == ALL_SHIFTS['休み']).OnlyEnforceIf(is_yasumi_after)
+                model.Add(shifts[(n, d + 2)] != ALL_SHIFTS['休み']).OnlyEnforceIf(is_yasumi_after.Not())
+                
+                # 準夜の次は必ず深夜
+                model.AddImplication(is_junya, is_shinya_next)
+                # 深夜の前は必ず準夜
+                model.AddImplication(is_shinya_next, is_junya)
+                # 深夜の次は必ず休み
+                model.AddImplication(is_shinya_next, is_yasumi_after)
+            
+            # 6連勤禁止
+            for d in range(NUM_DAYS - 5):
+                is_work = []
+                for i in range(6):
+                    work_var = model.NewBoolVar(f'is_work_n{n}_d{d+i}')
+                    model.Add(shifts[(n, d + i)] != ALL_SHIFTS['休み']).OnlyEnforceIf(work_var)
+                    model.Add(shifts[(n, d + i)] == ALL_SHIFTS['休み']).OnlyEnforceIf(work_var.Not())
+                    is_work.append(work_var)
+                model.Add(sum(is_work) <= 5)
+
+        # 各日の人数制約
+        violations = {}
         for d in range(NUM_DAYS):
             date = START_DATE + datetime.timedelta(days=d)
-            if date.weekday() < 5: 
-                model.Add(shifts[n, d] == ALL_SHIFTS['日勤'])
-            else: 
-                model.Add(shifts[n, d] == ALL_SHIFTS['休み'])
-    
-    # --- 基本制約 ---
-    penalties = []
-    
-    # 個人ごとのルール（師長以外）
-    for n in range(NUM_NURSES):
-        if nurse_skills[n] == ALL_SKILLS['師長']: 
-            continue
-        
-        # ロングと準夜の数を同じにする
-        is_long = []
-        is_junya = []
-        for d in range(NUM_DAYS):
-            long_var = model.NewBoolVar(f'is_long_n{n}_d{d}')
-            junya_var = model.NewBoolVar(f'is_junya_n{n}_d{d}')
+            day_type = 0 if date.weekday() < 5 else 1
             
-            model.Add(shifts[n, d] == ALL_SHIFTS['ロング']).OnlyEnforceIf(long_var)
-            model.Add(shifts[n, d] != ALL_SHIFTS['ロング']).OnlyEnforceIf(long_var.Not())
-            model.Add(shifts[n, d] == ALL_SHIFTS['準夜']).OnlyEnforceIf(junya_var)
-            model.Add(shifts[n, d] != ALL_SHIFTS['準夜']).OnlyEnforceIf(junya_var.Not())
-            
-            is_long.append(long_var)
-            is_junya.append(junya_var)
-        
-        model.Add(sum(is_long) == sum(is_junya))
-        
-        # ロング連続禁止
-        for d in range(NUM_DAYS - 1):
-            model.AddBoolOr([is_long[d].Not(), is_long[d+1].Not()])
-        
-        # ロング→準夜パターンを推奨（ソフト制約）
-        for d in range(NUM_DAYS - 1):
-            long_to_junya = model.NewBoolVar(f'long_to_junya_n{n}_d{d}')
-            model.AddBoolAnd([is_long[d], is_junya[d+1]]).OnlyEnforceIf(long_to_junya)
-            # ペナルティを小さくして推奨程度に
-            penalties.append(long_to_junya.Not() * 10)
-        
-        # 準夜→深夜→休みパターン（厳格）
-        for d in range(NUM_DAYS - 2):
-            is_shinya_next = model.NewBoolVar(f'is_shinya_n{n}_d{d+1}')
-            is_yasumi_after = model.NewBoolVar(f'is_yasumi_n{n}_d{d+2}')
-            
-            model.Add(shifts[(n, d + 1)] == ALL_SHIFTS['深夜']).OnlyEnforceIf(is_shinya_next)
-            model.Add(shifts[(n, d + 1)] != ALL_SHIFTS['深夜']).OnlyEnforceIf(is_shinya_next.Not())
-            model.Add(shifts[(n, d + 2)] == ALL_SHIFTS['休み']).OnlyEnforceIf(is_yasumi_after)
-            model.Add(shifts[(n, d + 2)] != ALL_SHIFTS['休み']).OnlyEnforceIf(is_yasumi_after.Not())
-            
-            # 準夜の次は必ず深夜
-            model.AddImplication(is_junya[d], is_shinya_next)
-            # 深夜の前は必ず準夜
-            model.AddImplication(is_shinya_next, is_junya[d])
-            # 深夜の次は必ず休み
-            model.AddImplication(is_shinya_next, is_yasumi_after)
-        
-        # 6連勤禁止
-        for d in range(NUM_DAYS - 5):
-            is_work = []
-            for i in range(6):
-                work_var = model.NewBoolVar(f'is_work_n{n}_d{d+i}')
-                model.Add(shifts[(n, d + i)] != ALL_SHIFTS['休み']).OnlyEnforceIf(work_var)
-                model.Add(shifts[(n, d + i)] == ALL_SHIFTS['休み']).OnlyEnforceIf(work_var.Not())
-                is_work.append(work_var)
-            model.Add(sum(is_work) <= 5)
-
-    # 各日の人数制約
-    violations = {}
-    for d in range(NUM_DAYS):
-        date = START_DATE + datetime.timedelta(days=d)
-        day_type = 0 if date.weekday() < 5 else 1
-        
-        for shift_code, counts in required_staff.items():
-            min_required = counts[day_type]
-            
-            is_on_shift = []
-            for n in range(NUM_NURSES):
-                var = model.NewBoolVar(f'on_s{shift_code}_n{n}_d{d}')
-                model.Add(shifts[(n, d)] == shift_code).OnlyEnforceIf(var)
-                model.Add(shifts[(n, d)] != shift_code).OnlyEnforceIf(var.Not())
-                is_on_shift.append(var)
-            
-            actual_count = sum(is_on_shift)
-            
-            if shift_code in [ALL_SHIFTS['ロング'], ALL_SHIFTS['準夜'], ALL_SHIFTS['深夜']]:
-                # 夜勤は必ず3人（厳密制約）
-                model.Add(actual_count == 3)
-            else:
-                # 日勤は柔軟に
-                diff = model.NewIntVar(-NUM_NURSES, NUM_NURSES, f'diff_d{d}_s{shift_code}')
-                model.Add(diff == actual_count - min_required)
-                violations[(d, shift_code)] = diff
-                abs_diff = model.NewIntVar(0, NUM_NURSES, f'abs_diff_d{d}_s{shift_code}')
-                model.AddAbsEquality(abs_diff, diff)
-                penalties.append(abs_diff * 5000)
+            for shift_code, counts in required_staff.items():
+                min_required = counts[day_type]
                 
-                # 日勤の上限
-                if shift_code == ALL_SHIFTS['日勤']:
-                    max_required = max_day_shift_staff[shift_code][day_type]
-                    surplus = model.NewIntVar(0, NUM_NURSES, f'surplus_d{d}_s{shift_code}')
-                    model.Add(actual_count - surplus <= max_required)
-                    penalties.append(surplus * 5000)
-    
-    # ブロック制約（3人夜勤では各ブロックから1人ずつ）
-    if settings.get('enable_block_constraints', True):
+                is_on_shift = []
+                for n in range(NUM_NURSES):
+                    var = model.NewBoolVar(f'on_s{shift_code}_n{n}_d{d}')
+                    model.Add(shifts[(n, d)] == shift_code).OnlyEnforceIf(var)
+                    model.Add(shifts[(n, d)] != shift_code).OnlyEnforceIf(var.Not())
+                    is_on_shift.append(var)
+                
+                actual_count = sum(is_on_shift)
+                
+                if shift_code in [ALL_SHIFTS['ロング'], ALL_SHIFTS['準夜'], ALL_SHIFTS['深夜']]:
+                    # 夜勤は必ず3人（厳密制約）
+                    model.Add(actual_count == 3)
+                else:
+                    # 日勤は柔軟に
+                    diff = model.NewIntVar(-NUM_NURSES, NUM_NURSES, f'diff_d{d}_s{shift_code}')
+                    model.Add(diff == actual_count - min_required)
+                    violations[(d, shift_code)] = diff
+                    abs_diff = model.NewIntVar(0, NUM_NURSES, f'abs_diff_d{d}_s{shift_code}')
+                    model.AddAbsEquality(abs_diff, diff)
+                    penalties.append(abs_diff * 5000)
+                    
+                    # 日勤の上限
+                    if shift_code == ALL_SHIFTS['日勤']:
+                        max_required = max_day_shift_staff[shift_code][day_type]
+                        surplus = model.NewIntVar(0, NUM_NURSES, f'surplus_d{d}_s{shift_code}')
+                        model.Add(actual_count - surplus <= max_required)
+                        penalties.append(surplus * 5000)
+        
+        # ブロック制約（設定に応じて適用）
+        if constraint_level['block_constraint'] and settings.get('enable_block_constraints', True):
+            for d in range(NUM_DAYS):
+                for shift_code in [ALL_SHIFTS['ロング'], ALL_SHIFTS['準夜'], ALL_SHIFTS['深夜']]:
+                    for block_id in ALL_BLOCKS.values():
+                        nurses_in_block = [n for n, b_id in enumerate(nurse_blocks) if b_id == block_id]
+                        if not nurses_in_block: 
+                            continue
+                        
+                        block_vars = []
+                        for n in nurses_in_block:
+                            var = model.NewBoolVar(f'blk_n{n}_d{d}_s{shift_code}_b{block_id}')
+                            model.Add(shifts[n, d] == shift_code).OnlyEnforceIf(var)
+                            model.Add(shifts[n, d] != shift_code).OnlyEnforceIf(var.Not())
+                            block_vars.append(var)
+                        
+                        # 各ブロックから1人が理想（ソフト制約）
+                        block_diff = model.NewIntVar(-len(block_vars), len(block_vars), f'block_diff_d{d}_s{shift_code}_b{block_id}')
+                        model.Add(block_diff == sum(block_vars) - 1)
+                        abs_block_diff = model.NewIntVar(0, len(block_vars), f'abs_block_diff_d{d}_s{shift_code}_b{block_id}')
+                        model.AddAbsEquality(abs_block_diff, block_diff)
+                        penalties.append(abs_block_diff * 1000)
+        
+        # リーダーシップ制約
         for d in range(NUM_DAYS):
             for shift_code in [ALL_SHIFTS['ロング'], ALL_SHIFTS['準夜'], ALL_SHIFTS['深夜']]:
-                for block_id in ALL_BLOCKS.values():
-                    nurses_in_block = [n for n, b_id in enumerate(nurse_blocks) if b_id == block_id]
-                    if not nurses_in_block: 
-                        continue
-                    
-                    block_vars = []
-                    for n in nurses_in_block:
-                        var = model.NewBoolVar(f'blk_n{n}_d{d}_s{shift_code}_b{block_id}')
-                        model.Add(shifts[n, d] == shift_code).OnlyEnforceIf(var)
-                        model.Add(shifts[n, d] != shift_code).OnlyEnforceIf(var.Not())
-                        block_vars.append(var)
-                    
-                    # 各ブロックから1人が理想
-                    model.Add(sum(block_vars) == 1)
-    
-    # 夜勤のリーダーシップ制約
-    for d in range(NUM_DAYS):
-        for shift_code in [ALL_SHIFTS['ロング'], ALL_SHIFTS['準夜'], ALL_SHIFTS['深夜']]:
-            nurses_on_shift = []
+                nurses_on_shift = []
+                for n in range(NUM_NURSES):
+                    var = model.NewBoolVar(f'on_night_n{n}_d{d}_s{shift_code}')
+                    model.Add(shifts[(n,d)] == shift_code).OnlyEnforceIf(var)
+                    model.Add(shifts[(n,d)] != shift_code).OnlyEnforceIf(var.Not())
+                    nurses_on_shift.append((n, var))
+                
+                # リーダーが必ず1人以上
+                leader_count = sum(var for n, var in nurses_on_shift 
+                                if nurse_skills[n] == ALL_SKILLS['リーダー'])
+                
+                if constraint_level['leadership_strict']:
+                    model.Add(leader_count >= 1)
+                else:
+                    # ソフト制約として
+                    leader_shortage = model.NewIntVar(0, 3, f'leader_shortage_d{d}_s{shift_code}')
+                    model.Add(leader_count + leader_shortage >= 1)
+                    penalties.append(leader_shortage * 10000)
+                
+                # 新人は最大1人
+                newbie_count = sum(var for n, var in nurses_on_shift 
+                             if nurse_skills[n] == ALL_SKILLS['新人'])
+                newbie_ok = model.NewBoolVar(f'newbie_ok_d{d}_s{shift_code}')
+                model.Add(newbie_count <= 1).OnlyEnforceIf(newbie_ok)
+                penalties.append(newbie_ok.Not() * 1000)
+        
+        # 公平性制約（重みを調整）
+        fairness_nurses = [n for n in range(NUM_NURSES) if nurse_skills[n] != ALL_SKILLS['師長']]
+        
+        # 休日数の公平性
+        for n in fairness_nurses:
+            holidays = []
+            for d in range(NUM_DAYS):
+                var = model.NewBoolVar(f'is_holiday_n{n}_d{d}')
+                model.Add(shifts[(n, d)] == ALL_SHIFTS['休み']).OnlyEnforceIf(var)
+                model.Add(shifts[(n, d)] != ALL_SHIFTS['休み']).OnlyEnforceIf(var.Not())
+                holidays.append(var)
+            
+            num_holidays = sum(holidays)
+            holiday_diff = model.NewIntVar(-NUM_DAYS, NUM_DAYS, f'holiday_diff_n{n}')
+            model.Add(holiday_diff == num_holidays - MONTHLY_HOLIDAYS)
+            abs_holiday_diff = model.NewIntVar(0, NUM_DAYS, f'abs_holiday_diff_n{n}')
+            model.AddAbsEquality(abs_holiday_diff, holiday_diff)
+            penalties.append(abs_holiday_diff * int(100 * constraint_level['fairness_weight']))
+        
+        model.Minimize(sum(penalties))
+        
+        # ソルバー設定
+        solver = cp_model.CpSolver()
+        solver.parameters.max_time_in_seconds = settings.get('max_solve_time', 30) / len(constraint_levels)
+        solver.parameters.num_search_workers = min(4, settings.get('num_workers', 4))
+        solver.parameters.random_seed = 42  # 再現性のため
+        
+        status = solver.Solve(model)
+
+        if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
+            records = []
             for n in range(NUM_NURSES):
-                var = model.NewBoolVar(f'on_night_n{n}_d{d}_s{shift_code}')
-                model.Add(shifts[(n,d)] == shift_code).OnlyEnforceIf(var)
-                model.Add(shifts[(n,d)] != shift_code).OnlyEnforceIf(var.Not())
-                nurses_on_shift.append((n, var))
+                for d in range(NUM_DAYS):
+                    date = START_DATE + datetime.timedelta(days=d)
+                    records.append({ 
+                        "スタッフ": staff_df.iloc[n]['名前'], 
+                        "スキル": staff_df.iloc[n]['スキル'], 
+                        "ブロック": staff_df.iloc[n]['ブロック'], 
+                        "日付": date, 
+                        "勤務": SHIFT_NAMES[solver.Value(shifts[(n,d)])] 
+                    })
+            result_df = pd.DataFrame(records)
+            pivot_df = result_df.pivot_table(
+                index=['スタッフ','スキル','ブロック'], 
+                columns='日付', 
+                values='勤務', 
+                aggfunc='first'
+            ).reset_index()
             
-            # リーダーが必ず1人以上（厳密制約）
-            leader_count = sum(var for n, var in nurses_on_shift 
-                            if nurse_skills[n] == ALL_SKILLS['リーダー'])
+            violation_report = {}
+            for (d, sc), diff_var in violations.items():
+                if diff_var is not None:
+                    diff_val = solver.Value(diff_var)
+                    if diff_val != 0:
+                        violation_report[(d, sc)] = diff_val
             
-            model.Add(leader_count >= 1)
-            
-            # 新人は最大1人（ロング、準夜、深夜すべて）
-            newbie_count = sum(var for n, var in nurses_on_shift 
-                         if nurse_skills[n] == ALL_SKILLS['新人'])
-            newbie_ok = model.NewBoolVar(f'newbie_ok_d{d}_s{shift_code}')
-            model.Add(newbie_count <= 1).OnlyEnforceIf(newbie_ok)
+            # 制約レベルの警告
+            if level_idx > 0:
+                violation_report['constraint_level'] = level_idx
+                        
+            return True, pivot_df, solver.ObjectiveValue(), violation_report
+        
+        # 次のレベルを試す
+        if level_idx < len(constraint_levels) - 1:
+            continue
+    
+    # すべてのレベルで失敗
+    return False, None, -1, Nonenewbie_ok)
             penalties.append(newbie_ok.Not() * 1000)
     
     # 公平性制約
@@ -362,7 +453,7 @@ st.title('🏥 看護師シフト管理アプリ【3人夜勤体制版】')
 if 'staff_df' not in st.session_state:
     initial_staff_data = {
         '名前': [f'看護師{i+1:02d}' for i in range(22)], 
-        'スキル': ['師長'] + ['リーダー']*4 + ['中堅']*8 + ['若手']*6 + ['新人']*3,
+        'スキル': ['師長'] + ['リーダー']*5 + ['中堅']*7 + ['若手']*6 + ['新人']*3,
         'ブロック': ['A']*7 + ['B']*7 + ['C']*8
     }
     st.session_state.staff_df = pd.DataFrame(initial_staff_data)
@@ -389,7 +480,9 @@ with tab1:
         start_date_ui = st.date_input("シフト作成開始日", value=default_date, key="start_date_selector", format="YYYY/MM/DD")
         
         st.subheader('高速化設定')
-        max_time = st.slider('最大計算時間（秒）', min_value=10, max_value=60, value=20, step=5)
+        max_time = st.slider('最大計算時間（秒）', min_value=10, max_value=120, value=30, step=5)
+        num_workers = st.slider('並列処理数', min_value=1, max_value=4, value=2, step=1,
+                               help='GitHubなどクラウド環境では1-2を推奨')
         enable_blocks = st.checkbox('ブロック制約を有効化', value=True, 
                                    help='無効にすると計算が速くなりますが、ブロックの均等配分が保証されません')
         
@@ -407,11 +500,16 @@ with tab1:
                 'd_h_min': st.session_state.d_h_min_rule, 
                 'd_h_max': st.session_state.d_h_max_rule, 
                 'max_solve_time': max_time,
-                'enable_block_constraints': enable_blocks
+                'enable_block_constraints': enable_blocks,
+                'num_workers': num_workers
             }
             
             with st.spinner('AIが最適なシフトを作成中です...'):
+                progress_placeholder = st.empty()
+                progress_placeholder.info('🔍 厳密な制約で解を探索中...')
+                
                 success, result_df, objective_value, violation_report = create_3night_schedule(settings)
+                progress_placeholder.empty()
             
             if success:
                 st.session_state.result_df = result_df
@@ -419,6 +517,12 @@ with tab1:
                 st.success('シフト作成に成功しました！')
                 if objective_value > 0:
                     st.warning(f'一部のルールを妥協しました (ペナルティ: {int(objective_value)})。')
+                    if 'constraint_level' in violation_report:
+                        level = violation_report['constraint_level']
+                        if level == 1:
+                            st.info('📌 ブロック制約は維持、リーダー制約を緩和しました。')
+                        elif level == 2:
+                            st.warning('⚠️ ブロック制約とリーダー制約を緩和しました。手動調整が必要かもしれません。')
             else:
                 st.error('時間内に解を見つけられませんでした。制約を緩和するか、計算時間を延長してください。')
         
@@ -548,7 +652,19 @@ with tab1:
 
 with tab2:
     st.header('スタッフ情報管理')
-    st.info("💡 3人夜勤体制の推奨人数: 20-25名")
+    st.info("💡 3人夜勤体制の推奨人数: 20-25名（リーダー5名以上推奨）")
+    
+    # GitHubデプロイ時の注意
+    with st.expander("🌐 GitHub/クラウド環境で使用する場合"):
+        st.markdown("""
+        **パフォーマンス最適化のヒント：**
+        1. **並列処理数を1-2に設定**（クラウド環境はCPUが制限されるため）
+        2. **計算時間を30秒以上に設定**（複雑な制約の場合）
+        3. **ブロック制約を一時的に無効化**（計算が終わらない場合）
+        4. **リーダーを5名以上確保**（毎日の夜勤に必要）
+        
+        それでも解決しない場合は、スタッフ数を減らすか、制約を緩和してください。
+        """)
     
     # エクセルファイルアップロード機能
     st.subheader("📁 エクセルファイルからスタッフ情報を読み込む")
@@ -556,9 +672,9 @@ with tab2:
     # サンプルファイルのダウンロード
     with st.expander("📥 サンプルエクセルファイルをダウンロード"):
         sample_data = pd.DataFrame({
-            '名前': ['師長', '田中太郎', '佐藤花子', '鈴木一郎', '高橋美咲', '渡辺健太', '伊藤愛子', '山田次郎'],
-            'スキル': ['師長', 'リーダー', 'リーダー', '中堅', '中堅', '若手', '若手', '新人'],
-            'ブロック': ['A', 'A', 'B', 'B', 'C', 'C', 'A', 'B']
+            '名前': ['師長', '田中太郎', '佐藤花子', '鈴木一郎', '高橋美咲', '渡辺健太', '伊藤愛子', '山田次郎', '小林三郎', '加藤四郎'],
+            'スキル': ['師長', 'リーダー', 'リーダー', 'リーダー', '中堅', '中堅', '中堅', '若手', '若手', '新人'],
+            'ブロック': ['A', 'A', 'B', 'C', 'A', 'B', 'C', 'A', 'B', 'C']
         })
         
         # エクセルファイルを作成
@@ -772,8 +888,8 @@ with tab3:
         
         ### 推奨スタッフ構成（22名の場合）
         - 師長: 1名
-        - リーダー: 4-6名（夜勤体制を考慮）
-        - 中堅: 6-8名
+        - リーダー: 5-6名（夜勤体制を考慮、最低5名必須）
+        - 中堅: 7-8名
         - 若手: 5-6名
         - 新人: 2-3名
         """)
