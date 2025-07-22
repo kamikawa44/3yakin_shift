@@ -227,8 +227,8 @@ def create_3night_schedule(settings):
             holidays = []
             for d in range(NUM_DAYS):
                 var = model.NewBoolVar(f'is_holiday_n{n}_d{d}')
-                model.Add(shifts[(n, d)] == ALL_SKILLS['休み']).OnlyEnforceIf(var)
-                model.Add(shifts[(n, d)] != ALL_SKILLS['休み']).OnlyEnforceIf(var.Not())
+                model.Add(shifts[(n, d)] == ALL_SHIFTS['休み']).OnlyEnforceIf(var)
+                model.Add(shifts[(n, d)] != ALL_SHIFTS['休み']).OnlyEnforceIf(var.Not())
                 holidays.append(var)
             
             num_holidays = sum(holidays)
