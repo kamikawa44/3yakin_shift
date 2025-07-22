@@ -383,6 +383,12 @@ if 'result_df' not in st.session_state: st.session_state.result_df = None
 if 'hope_shifts' not in st.session_state: st.session_state.hope_shifts = []
 if 'hope_shifts_map' not in st.session_state: st.session_state.hope_shifts_map = {}
 if 'violation_report' not in st.session_state: st.session_state.violation_report = {}
+# ルール設定のデフォルト値
+if 'monthly_holidays_rule' not in st.session_state: st.session_state.monthly_holidays_rule = 10
+if 'd_w_min_rule' not in st.session_state: st.session_state.d_w_min_rule = 8
+if 'd_w_max_rule' not in st.session_state: st.session_state.d_w_max_rule = 10
+if 'd_h_min_rule' not in st.session_state: st.session_state.d_h_min_rule = 5
+if 'd_h_max_rule' not in st.session_state: st.session_state.d_h_max_rule = 7
 
 ALL_SHIFTS_DICT = {'日勤': 0, 'ロング': 1, '準夜': 2, '深夜': 3, '休み': 4}
 
